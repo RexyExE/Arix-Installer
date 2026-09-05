@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.5.2 (Production Stable)
+#  Version: 2.5.3 (Production Stable)
 #  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+ (Noble & beyond), Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL, Alpine
 # ==============================================================================
 
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.5.2"
+SCRIPT_VERSION="2.5.3"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -813,12 +813,15 @@ rebuild_theme() {
 
             local build_dir="/tmp/arix_panel_build_$$"
             mkdir -p "$build_dir"
-            mkdir -p "$build_dir/public"
+            mkdir -p "$build_dir/public/assets"
 
             # 1. Copy theme resources from container
             print_info "Extracting frontend source files from container..."
             docker cp "${DOCKER_CONTAINER}:/app/resources" "$build_dir/" 2>/dev/null || \
             docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/resources" "$build_dir/" 2>/dev/null || true
+            docker cp "${DOCKER_CONTAINER}:/app/public/assets" "$build_dir/public/" 2>/dev/null || \
+            docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/public/assets" "$build_dir/public/" 2>/dev/null || true
+            mkdir -p "$build_dir/public/assets"
             
             # 2. Check if container has package.json; if not, fetch build scaffold
             if ! docker cp "${DOCKER_CONTAINER}:/app/package.json" "$build_dir/" 2>/dev/null; then
@@ -847,7 +850,7 @@ rebuild_theme() {
                 -w /app \
                 -e NODE_OPTIONS="--openssl-legacy-provider" \
                 node:22-bookworm \
-                sh -c "node -e \"let p=require('./package.json'); delete p.engines; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; yarn config set network-timeout 600000 && yarn install --ignore-engines --network-timeout 600000 && yarn --ignore-engines run build:production"
+                sh -c "mkdir -p public/assets && node -e \"let p=require('./package.json'); delete p.engines; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; yarn config set network-timeout 600000 && yarn install --ignore-engines --network-timeout 600000 && mkdir -p public/assets && yarn --ignore-engines run build:production"
 
             if [ -d "$build_dir/public/assets" ] && [ -f "$build_dir/public/assets/manifest.json" ]; then
                 print_info "Injecting newly built Arix production assets into ${DOCKER_CONTAINER}..."

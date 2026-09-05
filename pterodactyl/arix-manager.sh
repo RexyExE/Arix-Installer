@@ -462,12 +462,25 @@ install_theme() {
         theme_source="${script_dir}/pterodactyl/arix/v2.0.8"
     elif [ -d "${script_dir}/pterodactyl" ] && [ -f "${script_dir}/pterodactyl/config/arixTheme.php" ]; then
         theme_source="${script_dir}/pterodactyl"
+    elif [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
+        theme_source="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
     elif [ -d "/tmp/arix/v2.0.8" ]; then
         theme_source="/tmp/arix/v2.0.8"
+    else
+        print_info "Theme source files not found locally. Downloading latest release from GitHub..."
+        mkdir -p /tmp/arix_repo_extracted
+        if curl -sSL "https://github.com/RexyExE/Arix-Installer/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp/arix_repo_extracted --strip-components=1 2>/dev/null; then
+            if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
+                theme_source="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
+            elif [ -d "/tmp/arix_repo_extracted/pterodactyl" ]; then
+                theme_source="/tmp/arix_repo_extracted/pterodactyl"
+            fi
+            print_success "Downloaded latest Arix files from GitHub successfully."
+        fi
     fi
 
     if [ -z "$theme_source" ] || [ ! -d "$theme_source" ]; then
-        print_warn "Local theme files not found automatically."
+        print_warn "Could not auto-download or locate theme files."
         echo -e " Enter absolute path to extracted Arix Theme folder (containing app/, resources/, etc.):"
         read -rp " Path: " user_path
         if [ -d "$user_path" ]; then

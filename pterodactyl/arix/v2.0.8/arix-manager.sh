@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.7.0 (Production Stable)
+#  Version: 2.8.0 (Production Stable)
 #  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+ (Noble & beyond), Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL, Alpine
 # ==============================================================================
 
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.7.0"
+SCRIPT_VERSION="2.8.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -798,80 +798,104 @@ rebuild_theme() {
         return 1
     fi
 
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local theme_src=""
+    if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
+        theme_src="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
+    elif [ -d "/tmp/arix_repo_extracted/pterodactyl" ]; then
+        theme_src="/tmp/arix_repo_extracted/pterodactyl"
+    elif [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
+        theme_src="${script_dir}/pterodactyl/arix/v2.0.8"
+    elif [ -d "${script_dir}/pterodactyl" ]; then
+        theme_src="${script_dir}/pterodactyl"
+    else
+        mkdir -p /tmp/arix_repo_extracted
+        curl -sSL "https://github.com/RexyExE/Arix-Installer/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp/arix_repo_extracted --strip-components=1 2>/dev/null || true
+        if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
+            theme_src="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
+        fi
+    fi
+
     if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
         print_info "Building production assets for Docker container: ${DOCKER_CONTAINER}..."
-        if docker exec -i "$DOCKER_CONTAINER" command -v yarn &>/dev/null; then
-            docker exec -i -e NODE_OPTIONS="--openssl-legacy-provider" "$DOCKER_CONTAINER" yarn install 2>/dev/null || true
-            docker exec -i -e NODE_OPTIONS="--openssl-legacy-provider" "$DOCKER_CONTAINER" yarn build:production
-            print_success "Production assets built successfully inside container!"
-        else
-            print_info "Container runs minimal Alpine/Nginx without Node.js toolchain."
-            print_info "Spawning temporary Node.js build container to compile Arix production assets..."
+        print_info "Spawning temporary Node.js build container to compile full Arix React SPA assets..."
 
-            local build_dir="/tmp/arix_panel_build_$$"
-            mkdir -p "$build_dir"
-            mkdir -p "$build_dir/public/assets"
+        local build_dir="/tmp/arix_panel_build_$$"
+        mkdir -p "$build_dir"
 
-            # 1. Copy theme resources from container
-            print_info "Extracting frontend source files from container..."
-            docker cp "${DOCKER_CONTAINER}:/app/resources" "$build_dir/" 2>/dev/null || \
-            docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/resources" "$build_dir/" 2>/dev/null || true
-            docker cp "${DOCKER_CONTAINER}:/app/public/assets" "$build_dir/public/" 2>/dev/null || \
-            docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/public/assets" "$build_dir/public/" 2>/dev/null || true
-            mkdir -p "$build_dir/public/assets"
-            
-            # 2. Check if container has package.json; if not, fetch build scaffold
-            if ! docker cp "${DOCKER_CONTAINER}:/app/package.json" "$build_dir/" 2>/dev/null && ! docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/package.json" "$build_dir/" 2>/dev/null; then
-                print_info "Fetching Pterodactyl build configuration (package.json, webpack, tsconfig)..."
-                curl -sSL "https://raw.githubusercontent.com/pterodactyl/panel/v1.11.3/package.json" -o "$build_dir/package.json"
-                curl -sSL "https://raw.githubusercontent.com/pterodactyl/panel/v1.11.3/yarn.lock" -o "$build_dir/yarn.lock"
-                curl -sSL "https://raw.githubusercontent.com/pterodactyl/panel/v1.11.3/webpack.config.js" -o "$build_dir/webpack.config.js"
-                curl -sSL "https://raw.githubusercontent.com/pterodactyl/panel/v1.11.3/tsconfig.json" -o "$build_dir/tsconfig.json"
-            else
-                docker cp "${DOCKER_CONTAINER}:/app/yarn.lock" "$build_dir/" 2>/dev/null || docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/yarn.lock" "$build_dir/" 2>/dev/null || true
-                docker cp "${DOCKER_CONTAINER}:/app/webpack.config.js" "$build_dir/" 2>/dev/null || docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/webpack.config.js" "$build_dir/" 2>/dev/null || true
-                docker cp "${DOCKER_CONTAINER}:/app/tsconfig.json" "$build_dir/" 2>/dev/null || docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/tsconfig.json" "$build_dir/" 2>/dev/null || true
-            fi
-
-            # 3. Copy Arix tailwind config if available
-            docker cp "${DOCKER_CONTAINER}:/app/tailwind.config.js" "$build_dir/" 2>/dev/null || \
-            docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/tailwind.config.js" "$build_dir/" 2>/dev/null || \
-            cp -f /tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8/tailwind.config.js "$build_dir/" 2>/dev/null || true
-
-            # 4. Run build using temporary docker container with host networking & Node 22
-            print_info "Compiling React frontend bundle with Webpack (using host network stack & Node 22)..."
-            docker run --rm \
-                --net=host \
-                --dns 8.8.8.8 \
-                --dns 1.1.1.1 \
-                -v "${build_dir}:/app" \
-                -w /app \
-                -e NODE_OPTIONS="--openssl-legacy-provider" \
-                node:22-bookworm \
-                sh -c "mkdir -p public/assets && node -e \"let p=require('./package.json'); delete p.engines; if(p.scripts){p.scripts.clean='mkdir -p public/assets';} require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; yarn config set network-timeout 600000 && yarn install --ignore-engines --network-timeout 600000 && mkdir -p public/assets && yarn --ignore-engines run build:production"
-
-            if [ -d "$build_dir/public/assets" ] && [ -f "$build_dir/public/assets/manifest.json" ]; then
-                print_info "Injecting newly built Arix production assets into ${DOCKER_CONTAINER}..."
-                docker cp "$build_dir/public/assets/." "${DOCKER_CONTAINER}:/app/public/assets/" 2>/dev/null || true
-                docker cp "$build_dir/public/assets/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/public/assets/" 2>/dev/null || true
-                if [ -d "/var/www/pterodactyl/public" ]; then
-                    mkdir -p /var/www/pterodactyl/public/assets
-                    cp -rf "$build_dir/public/assets/"* /var/www/pterodactyl/public/assets/ 2>/dev/null || true
-                fi
-                print_success "Arix frontend assets compiled and injected successfully!"
-            else
-                print_warn "Docker build container did not produce new assets. Using existing files."
-            fi
-
-            rm -rf "$build_dir"
+        # 1. Download official Pterodactyl panel frontend source scaffold (for index.tsx, webpack, tsconfig, etc.)
+        print_info "Fetching Pterodactyl frontend base scaffold from GitHub..."
+        if ! curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.3.tar.gz" | tar -xz -C "$build_dir" --strip-components=1 2>/dev/null; then
+            curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.7.tar.gz" | tar -xz -C "$build_dir" --strip-components=1 2>/dev/null || true
         fi
+
+        # 2. Overlay container resources (if any custom modifications exist)
+        docker cp "${DOCKER_CONTAINER}:/app/resources/." "$build_dir/resources/" 2>/dev/null || \
+        docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/resources/." "$build_dir/resources/" 2>/dev/null || true
+
+        # 3. Overlay Arix Theme source files
+        if [ -n "$theme_src" ] && [ -d "$theme_src" ]; then
+            print_info "Overlaying Arix Theme files into build staging directory..."
+            cp -rf "$theme_src/resources/"* "$build_dir/resources/" 2>/dev/null || true
+            cp -f "$theme_src/tailwind.config.js" "$build_dir/" 2>/dev/null || true
+        fi
+        mkdir -p "$build_dir/public/assets"
+
+        # 4. Compile with Docker Node 22 container using host network and legacy OpenSSL
+        print_info "Installing dependencies & Compiling React Webpack production bundle..."
+        docker run --rm \
+            --net=host \
+            --dns 8.8.8.8 \
+            --dns 1.1.1.1 \
+            -v "${build_dir}:/app" \
+            -w /app \
+            -e NODE_OPTIONS="--openssl-legacy-provider" \
+            node:22-bookworm \
+            sh -c "mkdir -p public/assets && \
+            node -e \"let p=require('./package.json'); delete p.engines; if(p.scripts){p.scripts.clean='mkdir -p public/assets';} require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; \
+            yarn config set network-timeout 600000 && \
+            yarn install --ignore-engines --network-timeout 600000 && \
+            yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1 --ignore-engines --network-timeout 600000 && \
+            mkdir -p public/assets && \
+            yarn --ignore-engines run build:production"
+
+        if [ -d "$build_dir/public/assets" ] && [ -f "$build_dir/public/assets/manifest.json" ]; then
+            print_info "Injecting newly built Arix production assets into ${DOCKER_CONTAINER}..."
+            docker cp "$build_dir/public/assets/." "${DOCKER_CONTAINER}:/app/public/assets/" 2>/dev/null || true
+            docker cp "$build_dir/public/assets/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/public/assets/" 2>/dev/null || true
+            if [ -n "$theme_src" ] && [ -d "$theme_src/public" ]; then
+                docker cp "$theme_src/public/." "${DOCKER_CONTAINER}:/app/public/" 2>/dev/null || true
+                docker cp "$theme_src/public/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/public/" 2>/dev/null || true
+            fi
+            if [ -d "/var/www/pterodactyl/public" ]; then
+                mkdir -p /var/www/pterodactyl/public/assets
+                cp -rf "$build_dir/public/assets/"* /var/www/pterodactyl/public/assets/ 2>/dev/null || true
+            fi
+            print_success "Arix frontend assets compiled and injected successfully!"
+        else
+            print_error "Asset compilation did not produce manifest.json. Check logs for details."
+        fi
+
+        rm -rf "$build_dir"
         fix_permissions
         clear_panel_caches
         print_success "Theme rebuild completed! Hard-refresh your browser (Ctrl+F5) to see the changes."
         return 0
     fi
 
+    # Native Standalone Build
     cd "$PANEL_DIR" || exit 1
+
+    # If resources/scripts/index.tsx is missing on host, fetch scaffold
+    if [ ! -f "${PANEL_DIR}/resources/scripts/index.tsx" ]; then
+        print_info "Downloading frontend build scaffold from GitHub..."
+        curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.3.tar.gz" | tar -xz -C "$PANEL_DIR" --strip-components=1 resources/scripts package.json yarn.lock webpack.config.js tsconfig.json 2>/dev/null || true
+        if [ -n "$theme_src" ] && [ -d "$theme_src" ]; then
+            cp -rf "$theme_src/resources/"* "${PANEL_DIR}/resources/" 2>/dev/null || true
+            cp -f "$theme_src/tailwind.config.js" "${PANEL_DIR}/" 2>/dev/null || true
+        fi
+    fi
 
     # Check for node and yarn
     if ! command -v node &>/dev/null; then
@@ -895,8 +919,10 @@ rebuild_theme() {
     print_info "Building production assets (OpenSSL legacy provider enabled)..."
     export NODE_OPTIONS="--openssl-legacy-provider"
 
-    yarn install --frozen-lockfile 2>/dev/null || yarn install
-    yarn build:production
+    mkdir -p "${PANEL_DIR}/public/assets"
+    yarn install --ignore-engines 2>/dev/null || yarn install
+    yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1 --ignore-engines 2>/dev/null || true
+    yarn --ignore-engines run build:production
 
     fix_permissions
     clear_panel_caches

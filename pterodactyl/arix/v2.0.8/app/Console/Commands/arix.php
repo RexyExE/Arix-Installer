@@ -71,7 +71,8 @@ class Arix extends Command
         exec("php artisan migrate --force");
 
         $this->info("Installing required frontend packages (yarn)...");
-        exec("yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1");
+        exec("yarn install --ignore-engines");
+        exec("yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1 --ignore-engines");
 
         $this->info("Compiling translations...");
         if ($this->getApplication()->has('language:compile')) {
@@ -82,9 +83,11 @@ class Arix extends Command
         $nodeVersion = (int) ltrim(shell_exec("node -v") ?? '0', "v");
         if ($nodeVersion >= 17) {
             $this->info("Node.js version is v{$nodeVersion} (>= 17), enabling OpenSSL legacy provider.");
-            putenv("NODE_OPTIONS=--openssl-legacy-provider");
+            putenv("NODE_OPTIONS=--openssl-legacy-provider --max-old-space-size=4096");
+        } else {
+            putenv("NODE_OPTIONS=--max-old-space-size=4096");
         }
-        exec("yarn build:production");
+        exec("yarn --ignore-engines run build:production");
 
         $this->info("Setting file permissions...");
         $this->fixWebPermissions();

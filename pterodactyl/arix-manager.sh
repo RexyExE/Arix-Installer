@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.8.0"
+SCRIPT_VERSION="2.9.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -690,8 +690,9 @@ install_theme() {
         print_step "Running Theme Database Migrations inside Docker"
         run_artisan migrate --force
 
-        print_step "Running Arix Theme Setup & Seeding inside Docker"
-        run_artisan arix:fix 2>/dev/null || run_artisan arix install 2>/dev/null || true
+        print_step "Running Arix Theme Setup, Seeding & Translations inside Docker"
+        run_artisan arix:fix 2>/dev/null || true
+        run_artisan language:compile 2>/dev/null || true
     else
         print_info "Deploying theme files from: ${theme_source} -> ${PANEL_DIR}"
         cp -rf "${theme_source}/"* "${PANEL_DIR}/"
@@ -702,15 +703,11 @@ install_theme() {
             php artisan migrate --force
         )
 
-        print_step "Running Arix Theme Setup & Seeding"
+        print_step "Running Arix Theme Setup, Seeding & Translations"
         (
             cd "$PANEL_DIR" || exit 1
-            if php artisan list | grep -q "arix:fix"; then
-                php artisan arix:fix
-            fi
-            if php artisan list | grep -q "arix"; then
-                php artisan arix install
-            fi
+            php artisan arix:fix 2>/dev/null || true
+            php artisan language:compile 2>/dev/null || true
         )
     fi
 
@@ -799,21 +796,25 @@ rebuild_theme() {
     fi
 
     local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     local theme_src=""
     if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
         theme_src="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
     elif [ -d "/tmp/arix_repo_extracted/pterodactyl" ]; then
         theme_src="/tmp/arix_repo_extracted/pterodactyl"
-    elif [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
+    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
         theme_src="${script_dir}/pterodactyl/arix/v2.0.8"
-    elif [ -d "${script_dir}/pterodactyl" ]; then
+    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl" ]; then
         theme_src="${script_dir}/pterodactyl"
+    elif [ -d "${PANEL_DIR}/arix/v2.0.8" ]; then
+        theme_src="${PANEL_DIR}/arix/v2.0.8"
     else
         mkdir -p /tmp/arix_repo_extracted
         curl -sSL "https://github.com/RexyExE/Arix-Installer/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp/arix_repo_extracted --strip-components=1 2>/dev/null || true
         if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
             theme_src="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
+        elif [ -d "/tmp/arix_repo_extracted/pterodactyl" ]; then
+            theme_src="/tmp/arix_repo_extracted/pterodactyl"
         fi
     fi
 
@@ -834,15 +835,22 @@ rebuild_theme() {
         docker cp "${DOCKER_CONTAINER}:/app/resources/." "$build_dir/resources/" 2>/dev/null || \
         docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/resources/." "$build_dir/resources/" 2>/dev/null || true
 
-        # 3. Overlay Arix Theme source files
+        # 3. Overlay Arix Theme source files and build configurations
         if [ -n "$theme_src" ] && [ -d "$theme_src" ]; then
             print_info "Overlaying Arix Theme files into build staging directory..."
             cp -rf "$theme_src/resources/"* "$build_dir/resources/" 2>/dev/null || true
-            cp -f "$theme_src/tailwind.config.js" "$build_dir/" 2>/dev/null || true
+            for cfg in package.json webpack.config.js tsconfig.json babel.config.js postcss.config.js tailwind.config.js; do
+                if [ -f "$theme_src/$cfg" ]; then
+                    cp -f "$theme_src/$cfg" "$build_dir/" 2>/dev/null || true
+                fi
+            done
         fi
         mkdir -p "$build_dir/public/assets"
 
-        # 4. Compile with Docker Node 22 container using host network and legacy OpenSSL
+        # 4. Compile translations
+        run_artisan language:compile 2>/dev/null || true
+
+        # 5. Compile with Docker Node 22 container using host network and legacy OpenSSL
         print_info "Installing dependencies & Compiling React Webpack production bundle..."
         docker run --rm \
             --net=host \
@@ -850,13 +858,11 @@ rebuild_theme() {
             --dns 1.1.1.1 \
             -v "${build_dir}:/app" \
             -w /app \
-            -e NODE_OPTIONS="--openssl-legacy-provider" \
+            -e NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096" \
             node:22-bookworm \
             sh -c "mkdir -p public/assets && \
-            node -e \"let p=require('./package.json'); delete p.engines; if(p.scripts){p.scripts.clean='mkdir -p public/assets';} require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; \
             yarn config set network-timeout 600000 && \
             yarn install --ignore-engines --network-timeout 600000 && \
-            yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1 --ignore-engines --network-timeout 600000 && \
             mkdir -p public/assets && \
             yarn --ignore-engines run build:production"
 
@@ -884,50 +890,114 @@ rebuild_theme() {
         return 0
     fi
 
-    # Native Standalone Build
+    # Native Standalone Build on Host
     cd "$PANEL_DIR" || exit 1
 
-    # If resources/scripts/index.tsx is missing on host, fetch scaffold
-    if [ ! -f "${PANEL_DIR}/resources/scripts/index.tsx" ]; then
-        print_info "Downloading frontend build scaffold from GitHub..."
-        curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.3.tar.gz" | tar -xz -C "$PANEL_DIR" --strip-components=1 resources/scripts package.json yarn.lock webpack.config.js tsconfig.json 2>/dev/null || true
-        if [ -n "$theme_src" ] && [ -d "$theme_src" ]; then
+    print_info "Synchronizing frontend build configurations to ${PANEL_DIR}..."
+    if [ -n "$theme_src" ] && [ -d "$theme_src" ]; then
+        for cfg in package.json webpack.config.js tsconfig.json babel.config.js postcss.config.js tailwind.config.js; do
+            if [ -f "$theme_src/$cfg" ]; then
+                cp -f "$theme_src/$cfg" "${PANEL_DIR}/"
+            fi
+        done
+        if [ -d "$theme_src/resources" ]; then
             cp -rf "$theme_src/resources/"* "${PANEL_DIR}/resources/" 2>/dev/null || true
-            cp -f "$theme_src/tailwind.config.js" "${PANEL_DIR}/" 2>/dev/null || true
+        fi
+        if [ -d "$theme_src/public" ]; then
+            cp -rf "$theme_src/public/"* "${PANEL_DIR}/public/" 2>/dev/null || true
         fi
     fi
 
-    # Check for node and yarn
-    if ! command -v node &>/dev/null; then
-        print_warn "Node.js is not installed. Installing Node.js LTS (v20+)..."
-        if command -v apt-get &>/dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
-            apt-get install -y nodejs npm 2>/dev/null || apt-get install -y nodejs 2>/dev/null || true
-        elif command -v dnf &>/dev/null; then
-            dnf module install -y nodejs:20 2>/dev/null || dnf install -y nodejs npm 2>/dev/null || true
-        elif command -v yum &>/dev/null; then
-            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>/dev/null || true
-            yum install -y nodejs npm 2>/dev/null || true
+    # Fallback: if package.json or webpack.config.js is still missing, fetch clean scaffold from official Pterodactyl release
+    if [ ! -f "${PANEL_DIR}/package.json" ] || [ ! -f "${PANEL_DIR}/webpack.config.js" ]; then
+        print_info "Downloading build scaffold from GitHub..."
+        local tmp_scaffold="/tmp/ptero_scaffold_$$"
+        mkdir -p "$tmp_scaffold"
+        if curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.3.tar.gz" | tar -xz -C "$tmp_scaffold" --strip-components=1 2>/dev/null; then
+            for f in package.json webpack.config.js tsconfig.json babel.config.js postcss.config.js tailwind.config.js; do
+                if [ -f "$tmp_scaffold/$f" ] && [ ! -f "${PANEL_DIR}/$f" ]; then
+                    cp -f "$tmp_scaffold/$f" "${PANEL_DIR}/"
+                fi
+            done
+        fi
+        rm -rf "$tmp_scaffold"
+    fi
+
+    # Compile translations
+    print_info "Compiling Arix language translations..."
+    run_artisan language:compile 2>/dev/null || true
+
+    local native_built=false
+
+    # If Docker is available on this host machine, prefer using a clean Docker Node container to build
+    # to avoid polluting host Node packages and prevent host version incompatibilities!
+    if command -v docker &>/dev/null && docker info &>/dev/null; then
+        print_info "Docker is available on system. Compiling assets with isolated Node 22 build container..."
+        mkdir -p "${PANEL_DIR}/public/assets"
+        docker run --rm \
+            --net=host \
+            --dns 8.8.8.8 \
+            --dns 1.1.1.1 \
+            -v "${PANEL_DIR}:/app" \
+            -w /app \
+            -e NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096" \
+            node:22-bookworm \
+            sh -c "mkdir -p public/assets && \
+            yarn config set network-timeout 600000 && \
+            yarn install --ignore-engines --network-timeout 600000 && \
+            mkdir -p public/assets && \
+            yarn --ignore-engines run build:production"
+        
+        if [ -f "${PANEL_DIR}/public/assets/manifest.json" ]; then
+            native_built=true
+            print_success "Arix frontend assets compiled cleanly via container!"
+        else
+            print_warn "Container compilation attempt did not find manifest.json. Falling back to host build..."
         fi
     fi
 
-    if ! command -v yarn &>/dev/null; then
-        print_warn "Yarn not found. Installing yarn globally..."
-        npm install -g yarn 2>/dev/null || true
+    # Native Host Build with Node and Yarn
+    if [ "$native_built" = false ]; then
+        if ! command -v node &>/dev/null; then
+            print_warn "Node.js is not installed. Installing Node.js LTS (v20+)..."
+            if command -v apt-get &>/dev/null; then
+                curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+                apt-get install -y nodejs npm 2>/dev/null || apt-get install -y nodejs 2>/dev/null || true
+            elif command -v dnf &>/dev/null; then
+                dnf module install -y nodejs:20 2>/dev/null || dnf install -y nodejs npm 2>/dev/null || true
+            elif command -v yum &>/dev/null; then
+                curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+                yum install -y nodejs npm 2>/dev/null || true
+            fi
+        fi
+
+        if ! command -v yarn &>/dev/null; then
+            print_warn "Yarn not found. Installing yarn globally..."
+            npm install -g yarn 2>/dev/null || true
+        fi
+
+        print_info "Building production assets on host (OpenSSL legacy provider & 4GB heap enabled)..."
+        export NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096"
+
+        mkdir -p "${PANEL_DIR}/public/assets"
+        yarn config set network-timeout 600000 2>/dev/null || true
+        yarn install --ignore-engines --network-timeout 600000
+        yarn --ignore-engines run build:production
+
+        if [ -f "${PANEL_DIR}/public/assets/manifest.json" ]; then
+            native_built=true
+            print_success "Arix frontend assets compiled successfully on host!"
+        else
+            print_error "Asset compilation did not produce manifest.json! Please check build errors above."
+        fi
     fi
-
-    print_info "Building production assets (OpenSSL legacy provider enabled)..."
-    export NODE_OPTIONS="--openssl-legacy-provider"
-
-    mkdir -p "${PANEL_DIR}/public/assets"
-    yarn install --ignore-engines 2>/dev/null || yarn install
-    yarn add cronstrue jszip react-turnstile @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities @types/md5 md5 react-icons@5.4.0 markdown-to-jsx@7.7.10 i18next-browser-languagedetector@7.2.1 --ignore-engines 2>/dev/null || true
-    yarn --ignore-engines run build:production
 
     fix_permissions
     clear_panel_caches
 
-    print_success "Production assets built and compiled successfully!"
+    if [ "$native_built" = true ]; then
+        print_success "Production assets built, verified, and activated successfully!"
+    fi
 }
 
 repair_theme() {
@@ -943,12 +1013,15 @@ repair_theme() {
         run_artisan migrate --force
 
         print_info "2. Executing arix:fix self-healing artisan routine inside Docker..."
-        docker exec -it "$DOCKER_CONTAINER" php artisan arix:fix 2>/dev/null || docker exec -it "$DOCKER_CONTAINER" php artisan arix fix 2>/dev/null || true
+        run_artisan arix:fix 2>/dev/null || true
 
-        print_info "3. Clearing view, config, route, and application caches inside Docker..."
+        print_info "3. Compiling translations inside Docker..."
+        run_artisan language:compile 2>/dev/null || true
+
+        print_info "4. Clearing view, config, route, and application caches inside Docker..."
         clear_panel_caches
 
-        print_info "4. Auditing file permissions inside Docker..."
+        print_info "5. Auditing file permissions inside Docker..."
         fix_permissions
 
         print_success "Arix Theme repair completed successfully inside container!"
@@ -962,12 +1035,15 @@ repair_theme() {
     run_artisan migrate --force
 
     print_info "2. Executing arix:fix self-healing artisan routine..."
-    run_artisan arix:fix 2>/dev/null || run_artisan arix fix 2>/dev/null || true
+    run_artisan arix:fix 2>/dev/null || true
 
-    print_info "3. Clearing view, config, route, and application caches..."
+    print_info "3. Compiling translations..."
+    run_artisan language:compile 2>/dev/null || true
+
+    print_info "4. Clearing view, config, route, and application caches..."
     clear_panel_caches
 
-    print_info "4. Auditing file permissions..."
+    print_info "5. Auditing file permissions..."
     fix_permissions
 
     print_success "Arix Theme repair completed successfully!"

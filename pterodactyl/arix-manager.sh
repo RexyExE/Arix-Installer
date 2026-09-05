@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.9.0"
+SCRIPT_VERSION="2.10.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible

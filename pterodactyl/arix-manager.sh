@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.3.0 (Production Stable)
-#  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+, Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL
+#  Version: 2.4.0 (Production Stable)
+#  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+ (Noble & beyond), Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL, Alpine
 # ==============================================================================
 
 set -o pipefail
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.3.0"
+SCRIPT_VERSION="2.4.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -94,6 +94,14 @@ detect_distro() {
         echo "$ID"
     else
         echo "unknown"
+    fi
+}
+
+detect_os_name() {
+    if [ -f /etc/os-release ]; then
+        grep "^PRETTY_NAME=" /etc/os-release | cut -d '=' -f2- | tr -d '"'
+    else
+        uname -s
     fi
 }
 
@@ -170,18 +178,36 @@ run_artisan() {
     fi
 }
 
-# Load database credentials from Panel .env
+# Load database credentials from Panel .env (Host or Docker)
 load_db_credentials() {
-    if [ ! -f "${PANEL_DIR}/.env" ]; then
+    local env_file=""
+    local tmp_env=""
+
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        tmp_env="/tmp/ptero_env_$$"
+        docker cp "${DOCKER_CONTAINER}:/app/.env" "$tmp_env" 2>/dev/null || \
+        docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/.env" "$tmp_env" 2>/dev/null || \
+        docker exec -i "$DOCKER_CONTAINER" cat /app/.env > "$tmp_env" 2>/dev/null || true
+        if [ -f "$tmp_env" ] && [ -s "$tmp_env" ]; then
+            env_file="$tmp_env"
+        fi
+    elif [ -f "${PANEL_DIR}/.env" ]; then
+        env_file="${PANEL_DIR}/.env"
+    fi
+
+    if [ -z "$env_file" ] || [ ! -f "$env_file" ]; then
+        [ -n "$tmp_env" ] && rm -f "$tmp_env" 2>/dev/null || true
         return 1
     fi
 
-    DB_CONNECTION=$(grep "^DB_CONNECTION=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
-    DB_HOST=$(grep "^DB_HOST=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
-    DB_PORT=$(grep "^DB_PORT=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
-    DB_DATABASE=$(grep "^DB_DATABASE=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
-    DB_USERNAME=$(grep "^DB_USERNAME=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
-    DB_PASSWORD=$(grep "^DB_PASSWORD=" "${PANEL_DIR}/.env" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_CONNECTION=$(grep "^DB_CONNECTION=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_HOST=$(grep "^DB_HOST=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_PORT=$(grep "^DB_PORT=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_DATABASE=$(grep "^DB_DATABASE=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_USERNAME=$(grep "^DB_USERNAME=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    DB_PASSWORD=$(grep "^DB_PASSWORD=" "$env_file" | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+
+    [ -n "$tmp_env" ] && rm -f "$tmp_env" 2>/dev/null || true
 
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_PORT="${DB_PORT:-3306}"
@@ -210,10 +236,13 @@ EOF
     echo -e " ${C_BOLD}${C_WHITE}Arix Theme ${THEME_VERSION} & Pterodactyl Multi-Management Suite${C_RESET} ${C_GRAY}(v${SCRIPT_VERSION})${C_RESET}"
     echo -e " ${C_DIM}─────────────────────────────────────────────────────────────────────────────${C_RESET}"
     
+    local os_pretty
+    os_pretty="$(detect_os_name)"
+    echo -e " System / OS:   ${C_CYAN}${os_pretty}${C_RESET} | Arch: ${C_WHITE}$(uname -m)${C_RESET}"
     if detect_panel; then
         if [ "$IS_DOCKER" = true ]; then
             echo -e " Panel Status:  ${C_GREEN}● Detected (Docker Container: ${DOCKER_CONTAINER})${C_RESET}"
-            echo -e " Environment:   ${C_CYAN}Containerized Pterodactyl${C_RESET} | Backup Dir: ${C_CYAN}${BACKUP_DIR}${C_RESET}"
+            echo -e " Environment:   ${C_CYAN}Containerized Pterodactyl (Ubuntu 26+ / Alpine)${C_RESET} | Backup: ${C_CYAN}${BACKUP_DIR}${C_RESET}"
         else
             local webuser
             webuser=$(detect_webuser)
@@ -358,12 +387,26 @@ backup_panel_files_only() {
     timestamp="$(date +%F_%H-%M-%S)"
     local target_file="${BACKUP_DIR}/pterodactyl_files_backup_${timestamp}.tar.gz"
 
-    tar --exclude='node_modules' \
-        --exclude='storage/logs/*.log' \
-        --exclude='storage/framework/cache/*' \
-        --exclude='storage/framework/sessions/*' \
-        --exclude='storage/framework/views/*' \
-        -czf "$target_file" -C "/var/www" "pterodactyl"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        local tmp_files="/tmp/ptero_files_dock_$$"
+        mkdir -p "$tmp_files"
+        docker cp "${DOCKER_CONTAINER}:/app/." "$tmp_files/" 2>/dev/null || \
+        docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/." "$tmp_files/" 2>/dev/null || true
+        tar --exclude='node_modules' \
+            --exclude='storage/logs/*.log' \
+            --exclude='storage/framework/cache/*' \
+            --exclude='storage/framework/sessions/*' \
+            --exclude='storage/framework/views/*' \
+            -czf "$target_file" -C "$tmp_files" . 2>/dev/null || true
+        rm -rf "$tmp_files"
+    else
+        tar --exclude='node_modules' \
+            --exclude='storage/logs/*.log' \
+            --exclude='storage/framework/cache/*' \
+            --exclude='storage/framework/sessions/*' \
+            --exclude='storage/framework/views/*' \
+            -czf "$target_file" -C "/var/www" "pterodactyl" 2>/dev/null || true
+    fi
 
     if [ -s "$target_file" ]; then
         local size
@@ -386,19 +429,42 @@ backup_full_system() {
     # 1. Database
     load_db_credentials
     local db_file="${bundle_dir}/database_${DB_DATABASE}.sql.gz"
-    if [ -n "$DB_PASSWORD" ]; then
-        mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -p"$DB_PASSWORD" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file"
-    else
-        mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file"
+    if [ -n "$DB_DATABASE" ]; then
+        if command -v mysqldump &>/dev/null; then
+            if [ -n "$DB_PASSWORD" ]; then
+                mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -p"$DB_PASSWORD" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file"
+            else
+                mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file"
+            fi
+        elif [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+            if [ -n "$DB_PASSWORD" ]; then
+                docker exec -i "$DOCKER_CONTAINER" mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -p"$DB_PASSWORD" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file" || true
+            else
+                docker exec -i "$DOCKER_CONTAINER" mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" "$DB_DATABASE" 2>/dev/null | gzip > "$db_file" || true
+            fi
+        fi
     fi
 
     # 2. Panel Files
     local files_file="${bundle_dir}/panel_files.tar.gz"
-    tar --exclude='node_modules' \
-        --exclude='storage/logs/*.log' \
-        --exclude='storage/framework/cache/*' \
-        --exclude='storage/framework/views/*' \
-        -czf "$files_file" -C "/var/www" "pterodactyl"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        local tmp_files="/tmp/ptero_files_dock_$$"
+        mkdir -p "$tmp_files"
+        docker cp "${DOCKER_CONTAINER}:/app/." "$tmp_files/" 2>/dev/null || \
+        docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/." "$tmp_files/" 2>/dev/null || true
+        tar --exclude='node_modules' \
+            --exclude='storage/logs/*.log' \
+            --exclude='storage/framework/cache/*' \
+            --exclude='storage/framework/views/*' \
+            -czf "$files_file" -C "$tmp_files" . 2>/dev/null || true
+        rm -rf "$tmp_files"
+    else
+        tar --exclude='node_modules' \
+            --exclude='storage/logs/*.log' \
+            --exclude='storage/framework/cache/*' \
+            --exclude='storage/framework/views/*' \
+            -czf "$files_file" -C "/var/www" "pterodactyl" 2>/dev/null || true
+    fi
 
     # 3. Environment Manifest
     cat << EOF > "${bundle_dir}/manifest.json"
@@ -407,6 +473,7 @@ backup_full_system() {
   "theme_version": "${THEME_VERSION}",
   "script_version": "${SCRIPT_VERSION}",
   "database": "${DB_DATABASE}",
+  "environment": "$([ "$IS_DOCKER" = true ] && echo "docker" || echo "host")",
   "php_version": "$(php -r 'echo PHP_VERSION;' 2>/dev/null || echo 'unknown')"
 }
 EOF
@@ -419,10 +486,10 @@ EOF
     if [ -s "$final_archive" ]; then
         local size
         size=$(du -h "$final_archive" | awk '{print $1}')
-        print_success "Full system bundle created: ${final_archive} (${size})"
+        print_success "Master Sectionized Backup Archive created: ${final_archive} (${size})"
         return 0
     else
-        print_error "Failed to package full system bundle."
+        print_error "Failed to create full system backup archive."
         return 1
     fi
 }
@@ -507,8 +574,18 @@ restore_backup_menu() {
             local files_dump
             files_dump=$(find "$inner_dir" -name "panel_files.tar.gz" | head -n 1)
             if [ -f "$files_dump" ]; then
-                print_info "Restoring panel files to /var/www..."
-                tar -xzf "$files_dump" -C "/var/www"
+                if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+                    print_info "Restoring panel files to Docker container: ${DOCKER_CONTAINER}..."
+                    local tmp_f_rest="/tmp/ptero_f_rest_$$"
+                    mkdir -p "$tmp_f_rest"
+                    tar -xzf "$files_dump" -C "$tmp_f_rest"
+                    docker cp "${tmp_f_rest}/." "${DOCKER_CONTAINER}:/app/" 2>/dev/null || \
+                    docker cp "${tmp_f_rest}/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/" 2>/dev/null || true
+                    rm -rf "$tmp_f_rest"
+                else
+                    print_info "Restoring panel files to /var/www..."
+                    tar -xzf "$files_dump" -C "/var/www"
+                fi
             fi
         fi
         rm -rf "$tmp_restore"
@@ -516,14 +593,32 @@ restore_backup_menu() {
         clear_panel_caches
         print_success "Full system bundle restore complete!"
     elif [[ "$selected" == *pterodactyl_files_backup* ]]; then
-        print_step "Restoring Panel Files to /var/www"
-        tar -xzf "$selected" -C "/var/www"
+        print_step "Restoring Panel Files"
+        if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+            local tmp_rest="/tmp/ptero_rest_$$"
+            mkdir -p "$tmp_rest"
+            tar -xzf "$selected" -C "$tmp_rest"
+            docker cp "${tmp_rest}/." "${DOCKER_CONTAINER}:/app/" 2>/dev/null || \
+            docker cp "${tmp_rest}/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/" 2>/dev/null || true
+            rm -rf "$tmp_rest"
+        else
+            tar -xzf "$selected" -C "/var/www"
+        fi
         fix_permissions
         clear_panel_caches
         print_success "Panel files restored successfully!"
     elif [[ "$selected" == *arix_theme_backup* ]]; then
-        print_step "Restoring Arix Theme files to ${PANEL_DIR}"
-        tar -xzf "$selected" -C "$PANEL_DIR"
+        print_step "Restoring Arix Theme files"
+        if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+            local tmp_rest="/tmp/ptero_theme_rest_$$"
+            mkdir -p "$tmp_rest"
+            tar -xzf "$selected" -C "$tmp_rest"
+            docker cp "${tmp_rest}/." "${DOCKER_CONTAINER}:/app/" 2>/dev/null || \
+            docker cp "${tmp_rest}/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/" 2>/dev/null || true
+            rm -rf "$tmp_rest"
+        else
+            tar -xzf "$selected" -C "$PANEL_DIR"
+        fi
         fix_permissions
         clear_panel_caches
         print_success "Theme files restored successfully!"
@@ -726,9 +821,16 @@ rebuild_theme() {
 
     # Check for node and yarn
     if ! command -v node &>/dev/null; then
-        print_warn "Node.js is not installed. Installing Node.js LTS..."
-        curl -fsSL https://deb.nodesource.com/setup_18.x | bash - 2>/dev/null || true
-        apt-get install -y nodejs 2>/dev/null || yum install -y nodejs 2>/dev/null || true
+        print_warn "Node.js is not installed. Installing Node.js LTS (v20+)..."
+        if command -v apt-get &>/dev/null; then
+            curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+            apt-get install -y nodejs npm 2>/dev/null || apt-get install -y nodejs 2>/dev/null || true
+        elif command -v dnf &>/dev/null; then
+            dnf module install -y nodejs:20 2>/dev/null || dnf install -y nodejs npm 2>/dev/null || true
+        elif command -v yum &>/dev/null; then
+            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+            yum install -y nodejs npm 2>/dev/null || true
+        fi
     fi
 
     if ! command -v yarn &>/dev/null; then
@@ -754,6 +856,24 @@ repair_theme() {
         print_error "Pterodactyl Panel not found at ${PANEL_DIR}"
         press_enter
         return 1
+    fi
+
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        print_info "1. Syncing database migrations inside Docker (${DOCKER_CONTAINER})..."
+        run_artisan migrate --force
+
+        print_info "2. Executing arix:fix self-healing artisan routine inside Docker..."
+        docker exec -it "$DOCKER_CONTAINER" php artisan arix:fix 2>/dev/null || docker exec -it "$DOCKER_CONTAINER" php artisan arix fix 2>/dev/null || true
+
+        print_info "3. Clearing view, config, route, and application caches inside Docker..."
+        clear_panel_caches
+
+        print_info "4. Auditing file permissions inside Docker..."
+        fix_permissions
+
+        print_success "Arix Theme repair completed successfully inside container!"
+        press_enter
+        return 0
     fi
 
     cd "$PANEL_DIR" || exit 1
@@ -822,6 +942,27 @@ repair_pterodactyl() {
         print_error "Pterodactyl Panel not found at ${PANEL_DIR}"
         press_enter
         return 1
+    fi
+
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        print_info "1. Checking Composer dependencies inside Docker (${DOCKER_CONTAINER})..."
+        docker exec -i "$DOCKER_CONTAINER" composer install --no-dev --optimize-autoloader 2>/dev/null || true
+
+        print_info "2. Running pending migrations inside Docker..."
+        run_artisan migrate --force
+
+        print_info "3. Clearing and rebuilding configuration caches inside Docker..."
+        clear_panel_caches
+
+        print_info "4. Correcting directory permissions inside Docker..."
+        fix_permissions
+
+        print_info "5. Restarting queue worker inside Docker..."
+        run_artisan queue:restart 2>/dev/null || true
+
+        print_success "Pterodactyl core repair finished inside container!"
+        press_enter
+        return 0
     fi
 
     cd "$PANEL_DIR" || exit 1
@@ -909,10 +1050,19 @@ system_doctor() {
 
     # 2. Runtimes
     echo -e "\n ${C_BOLD}2. Runtimes & Packages:${C_RESET}"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        local doc_php
+        doc_php=$(docker exec -i "$DOCKER_CONTAINER" php -r 'echo PHP_VERSION;' 2>/dev/null || echo "not found")
+        echo -e "    PHP (Docker):${C_GREEN}${doc_php}${C_RESET}"
+        if docker exec -i "$DOCKER_CONTAINER" command -v composer &>/dev/null; then
+            echo -e "    Composer:    ${C_GREEN}Available in Container${C_RESET}"
+        fi
+    fi
+
     if command -v php &>/dev/null; then
-        echo -e "    PHP:         ${C_GREEN}$(php -r 'echo PHP_VERSION;')${C_RESET}"
-    else
-        echo -e "    PHP:         ${C_RED}Not Installed${C_RESET}"
+        echo -e "    PHP (Host):  ${C_GREEN}$(php -r 'echo PHP_VERSION;')${C_RESET}"
+    elif [ "$IS_DOCKER" = false ]; then
+        echo -e "    PHP:         ${C_RED}Not Installed on Host${C_RESET}"
     fi
 
     if command -v node &>/dev/null; then
@@ -929,22 +1079,30 @@ system_doctor() {
 
     if command -v composer &>/dev/null; then
         echo -e "    Composer:    ${C_GREEN}$(composer --version --no-ansi 2>/dev/null | awk '{print $3}')${C_RESET}"
-    else
+    elif [ "$IS_DOCKER" = false ]; then
         echo -e "    Composer:    ${C_YELLOW}Not Installed${C_RESET}"
     fi
 
     # 3. Panel Checks
     echo -e "\n ${C_BOLD}3. Pterodactyl Panel Audit:${C_RESET}"
     if detect_panel; then
-        echo -e "    Files:       ${C_GREEN}Found at ${PANEL_DIR}${C_RESET}"
+        if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+            echo -e "    Files:       ${C_GREEN}Running in Docker Container (${DOCKER_CONTAINER})${C_RESET}"
+        else
+            echo -e "    Files:       ${C_GREEN}Found at ${PANEL_DIR}${C_RESET}"
+        fi
         if load_db_credentials; then
             echo -e "    Database:    ${C_GREEN}Configured (${DB_USERNAME}@${DB_HOST}/${DB_DATABASE})${C_RESET}"
             # Test DB connection
             local db_test
-            if [ -n "$DB_PASSWORD" ]; then
-                db_test=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -p"$DB_PASSWORD" -e "SELECT 1;" 2>&1 || true)
-            else
-                db_test=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -e "SELECT 1;" 2>&1 || true)
+            if command -v mysql &>/dev/null; then
+                if [ -n "$DB_PASSWORD" ]; then
+                    db_test=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -p"$DB_PASSWORD" -e "SELECT 1;" 2>&1 || true)
+                else
+                    db_test=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -e "SELECT 1;" 2>&1 || true)
+                fi
+            elif [ "$IS_DOCKER" = true ]; then
+                db_test=$(docker exec -i "$DOCKER_CONTAINER" php -r "try{new PDO('mysql:host=${DB_HOST};port=${DB_PORT};dbname=${DB_DATABASE}','${DB_USERNAME}','${DB_PASSWORD}');echo '1';}catch(Exception \$e){echo \$e->getMessage();}" 2>&1 || true)
             fi
             if [[ "$db_test" == *"1"* ]]; then
                 echo -e "    DB Status:   ${C_GREEN}Online & Reachable${C_RESET}"
@@ -960,22 +1118,42 @@ system_doctor() {
 
     # 4. Arix Theme Checks
     echo -e "\n ${C_BOLD}4. Arix Theme Integrity:${C_RESET}"
-    if [ -f "${PANEL_DIR}/config/arixTheme.php" ]; then
-        echo -e "    Config:      ${C_GREEN}config/arixTheme.php Present${C_RESET}"
-    else
-        echo -e "    Config:      ${C_YELLOW}config/arixTheme.php Missing${C_RESET}"
-    fi
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        if docker exec -i "$DOCKER_CONTAINER" test -f /app/config/arixTheme.php 2>/dev/null || docker exec -i "$DOCKER_CONTAINER" test -f /var/www/pterodactyl/config/arixTheme.php 2>/dev/null; then
+            echo -e "    Config:      ${C_GREEN}arixTheme.php Present inside container${C_RESET}"
+        else
+            echo -e "    Config:      ${C_YELLOW}arixTheme.php Missing inside container${C_RESET}"
+        fi
 
-    if [ -d "${PANEL_DIR}/public/arix" ]; then
-        echo -e "    Assets:      ${C_GREEN}public/arix/ Present${C_RESET}"
-    else
-        echo -e "    Assets:      ${C_YELLOW}public/arix/ Missing${C_RESET}"
-    fi
+        if docker exec -i "$DOCKER_CONTAINER" test -d /app/public/arix 2>/dev/null || docker exec -i "$DOCKER_CONTAINER" test -d /var/www/pterodactyl/public/arix 2>/dev/null; then
+            echo -e "    Assets:      ${C_GREEN}public/arix/ Present inside container${C_RESET}"
+        else
+            echo -e "    Assets:      ${C_YELLOW}public/arix/ Missing inside container${C_RESET}"
+        fi
 
-    if [ -f "${PANEL_DIR}/app/Console/Commands/ArixFix.php" ]; then
-        echo -e "    Self-Heal:   ${C_GREEN}Artisan arix:fix available${C_RESET}"
+        if docker exec -i "$DOCKER_CONTAINER" test -f /app/app/Console/Commands/ArixFix.php 2>/dev/null || docker exec -i "$DOCKER_CONTAINER" test -f /var/www/pterodactyl/app/Console/Commands/ArixFix.php 2>/dev/null; then
+            echo -e "    Self-Heal:   ${C_GREEN}Artisan arix:fix ready inside container${C_RESET}"
+        else
+            echo -e "    Self-Heal:   ${C_YELLOW}Artisan arix:fix missing inside container${C_RESET}"
+        fi
     else
-        echo -e "    Self-Heal:   ${C_YELLOW}Artisan arix:fix missing${C_RESET}"
+        if [ -f "${PANEL_DIR}/config/arixTheme.php" ]; then
+            echo -e "    Config:      ${C_GREEN}config/arixTheme.php Present${C_RESET}"
+        else
+            echo -e "    Config:      ${C_YELLOW}config/arixTheme.php Missing${C_RESET}"
+        fi
+
+        if [ -d "${PANEL_DIR}/public/arix" ]; then
+            echo -e "    Assets:      ${C_GREEN}public/arix/ Present${C_RESET}"
+        else
+            echo -e "    Assets:      ${C_YELLOW}public/arix/ Missing${C_RESET}"
+        fi
+
+        if [ -f "${PANEL_DIR}/app/Console/Commands/ArixFix.php" ]; then
+            echo -e "    Self-Heal:   ${C_GREEN}Artisan arix:fix available${C_RESET}"
+        else
+            echo -e "    Self-Heal:   ${C_YELLOW}Artisan arix:fix missing${C_RESET}"
+        fi
     fi
 
     echo ""

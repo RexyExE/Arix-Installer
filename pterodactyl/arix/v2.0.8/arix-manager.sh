@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.1.0 (Production Stable)
+#  Version: 2.2.0 (Production Stable)
 #  Supported OS: Ubuntu 20.04/22.04/24.04, Debian 11/12, AlmaLinux/Rocky 8/9, RHEL
 # ==============================================================================
 
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.2.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible

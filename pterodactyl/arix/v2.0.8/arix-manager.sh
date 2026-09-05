@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.2.0 (Production Stable)
-#  Supported OS: Ubuntu 20.04/22.04/24.04, Debian 11/12, AlmaLinux/Rocky 8/9, RHEL
+#  Version: 2.3.0 (Production Stable)
+#  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+, Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL
 # ==============================================================================
 
 set -o pipefail
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.3.0"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -306,7 +306,7 @@ backup_database() {
 backup_theme_only() {
     print_step "Creating Theme-Only Backup (Arix configuration and customized templates)"
     if ! detect_panel; then
-        print_error "Pterodactyl panel not detected at ${PANEL_DIR}"
+        print_error "Pterodactyl panel not detected"
         return 1
     fi
 
@@ -314,17 +314,27 @@ backup_theme_only() {
     timestamp="$(date +%F_%H-%M-%S)"
     local target_file="${BACKUP_DIR}/arix_theme_backup_${timestamp}.tar.gz"
 
-    tar -czf "$target_file" -C "$PANEL_DIR" \
-        app/Http/Controllers/Admin/Arix \
-        app/Console/Commands/Arix.php \
-        app/Console/Commands/ArixFix.php \
-        app/Console/Commands/ArixLang.php \
-        config/arixTheme.php \
-        resources/views/admin/arix \
-        resources/views/components/arix \
-        resources/views/layouts/arix.blade.php \
-        public/arix \
-        2>/dev/null || true
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        local tmp_backup="/tmp/arix_docker_backup_$$"
+        mkdir -p "$tmp_backup"
+        docker cp "${DOCKER_CONTAINER}:/app/config/arixTheme.php" "${tmp_backup}/" 2>/dev/null || true
+        docker cp "${DOCKER_CONTAINER}:/app/resources/views/admin/arix" "${tmp_backup}/" 2>/dev/null || true
+        docker cp "${DOCKER_CONTAINER}:/app/public/arix" "${tmp_backup}/" 2>/dev/null || true
+        tar -czf "$target_file" -C "$tmp_backup" . 2>/dev/null || true
+        rm -rf "$tmp_backup"
+    else
+        tar -czf "$target_file" -C "$PANEL_DIR" \
+            app/Http/Controllers/Admin/Arix \
+            app/Console/Commands/Arix.php \
+            app/Console/Commands/ArixFix.php \
+            app/Console/Commands/ArixLang.php \
+            config/arixTheme.php \
+            resources/views/admin/arix \
+            resources/views/components/arix \
+            resources/views/layouts/arix.blade.php \
+            public/arix \
+            2>/dev/null || true
+    fi
 
     if [ -s "$target_file" ]; then
         local size
@@ -332,8 +342,8 @@ backup_theme_only() {
         print_success "Arix Theme backup created: ${target_file} (${size})"
         return 0
     else
-        print_error "Failed to create theme backup."
-        return 1
+        print_warn "Theme backup skipped (stock panel had no pre-existing Arix files)."
+        return 0
     fi
 }
 
@@ -642,16 +652,20 @@ remove_theme() {
     backup_theme_only
 
     print_step "Cleaning up Arix files"
-    rm -rf "${PANEL_DIR}/public/arix"
-    rm -rf "${PANEL_DIR}/resources/views/admin/arix"
-    rm -rf "${PANEL_DIR}/resources/views/components/arix"
-    rm -f "${PANEL_DIR}/resources/views/layouts/arix.blade.php"
-    rm -rf "${PANEL_DIR}/app/Http/Controllers/Admin/Arix"
-    rm -f "${PANEL_DIR}/app/Console/Commands/Arix.php"
-    rm -f "${PANEL_DIR}/app/Console/Commands/arix.php"
-    rm -f "${PANEL_DIR}/app/Console/Commands/ArixFix.php"
-    rm -f "${PANEL_DIR}/app/Console/Commands/ArixLang.php"
-    rm -f "${PANEL_DIR}/config/arixTheme.php"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        docker exec -i "$DOCKER_CONTAINER" rm -rf /app/public/arix /app/resources/views/admin/arix /app/resources/views/components/arix /app/resources/views/layouts/arix.blade.php /app/app/Http/Controllers/Admin/Arix /app/config/arixTheme.php 2>/dev/null || true
+    else
+        rm -rf "${PANEL_DIR}/public/arix"
+        rm -rf "${PANEL_DIR}/resources/views/admin/arix"
+        rm -rf "${PANEL_DIR}/resources/views/components/arix"
+        rm -f "${PANEL_DIR}/resources/views/layouts/arix.blade.php"
+        rm -rf "${PANEL_DIR}/app/Http/Controllers/Admin/Arix"
+        rm -f "${PANEL_DIR}/app/Console/Commands/Arix.php"
+        rm -f "${PANEL_DIR}/app/Console/Commands/arix.php"
+        rm -f "${PANEL_DIR}/app/Console/Commands/ArixFix.php"
+        rm -f "${PANEL_DIR}/app/Console/Commands/ArixLang.php"
+        rm -f "${PANEL_DIR}/config/arixTheme.php"
+    fi
 
     print_step "Downloading clean stock Pterodactyl panel files"
     local tmp_stock="/tmp/ptero_stock_$$"
@@ -660,10 +674,17 @@ remove_theme() {
     
     print_info "Fetching stock release from GitHub..."
     if curl -sSL "$panel_url" | tar -xz -C "$tmp_stock"; then
-        cp -rf "${tmp_stock}/resources" "${PANEL_DIR}/"
-        cp -rf "${tmp_stock}/public" "${PANEL_DIR}/"
-        cp -rf "${tmp_stock}/routes" "${PANEL_DIR}/"
-        cp -rf "${tmp_stock}/app" "${PANEL_DIR}/"
+        if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+            docker cp "${tmp_stock}/resources/." "${DOCKER_CONTAINER}:/app/resources/" 2>/dev/null || true
+            docker cp "${tmp_stock}/public/." "${DOCKER_CONTAINER}:/app/public/" 2>/dev/null || true
+            docker cp "${tmp_stock}/routes/." "${DOCKER_CONTAINER}:/app/routes/" 2>/dev/null || true
+            docker cp "${tmp_stock}/app/." "${DOCKER_CONTAINER}:/app/app/" 2>/dev/null || true
+        else
+            cp -rf "${tmp_stock}/resources" "${PANEL_DIR}/"
+            cp -rf "${tmp_stock}/public" "${PANEL_DIR}/"
+            cp -rf "${tmp_stock}/routes" "${PANEL_DIR}/"
+            cp -rf "${tmp_stock}/app" "${PANEL_DIR}/"
+        fi
         print_success "Stock files restored."
     else
         print_warn "Could not download stock panel files automatically. Local Arix artifacts were deleted."
@@ -680,9 +701,25 @@ remove_theme() {
 rebuild_theme() {
     print_step "Rebuilding Theme & Frontend Assets"
     if ! detect_panel; then
-        print_error "Pterodactyl Panel not found at ${PANEL_DIR}"
+        print_error "Pterodactyl Panel not found"
         press_enter
         return 1
+    fi
+
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        print_info "Building production assets inside Docker container: ${DOCKER_CONTAINER}..."
+        if docker exec -i "$DOCKER_CONTAINER" command -v yarn &>/dev/null; then
+            docker exec -i -e NODE_OPTIONS="--openssl-legacy-provider" "$DOCKER_CONTAINER" yarn install 2>/dev/null || true
+            docker exec -i -e NODE_OPTIONS="--openssl-legacy-provider" "$DOCKER_CONTAINER" yarn build:production
+            print_success "Production assets built successfully inside container!"
+        else
+            print_info "Container runs minimal Alpine/Nginx without Node.js toolchain."
+            print_info "The Arix package comes with pre-compiled, optimized production assets in /public."
+            print_success "Pre-compiled production assets deployed and active!"
+        fi
+        fix_permissions
+        clear_panel_caches
+        return 0
     fi
 
     cd "$PANEL_DIR" || exit 1

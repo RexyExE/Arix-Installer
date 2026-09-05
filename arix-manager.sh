@@ -98,9 +98,44 @@ detect_distro() {
 }
 
 detect_panel() {
-    if [ -f "${PANEL_DIR}/artisan" ] && [ -f "${PANEL_DIR}/.env" ]; then
+    # 1. Check currently configured PANEL_DIR
+    if [ -n "$PANEL_DIR" ] && [ -f "${PANEL_DIR}/artisan" ]; then
         return 0
     fi
+
+    # 2. Check current working directory
+    local current_pwd
+    current_pwd="$(pwd)"
+    if [ -f "${current_pwd}/artisan" ]; then
+        PANEL_DIR="${current_pwd}"
+        return 0
+    fi
+
+    # 3. Check common standard directories
+    local search_paths=(
+        "/var/www/pterodactyl"
+        "/var/www/panel"
+        "/var/www/pterodactyl/panel"
+        "/var/www/html/pterodactyl"
+        "/var/www/html"
+        "/opt/pterodactyl"
+    )
+
+    for p in "${search_paths[@]}"; do
+        if [ -f "${p}/artisan" ]; then
+            PANEL_DIR="$p"
+            return 0
+        fi
+    done
+
+    # 4. Try locate/find if still not found
+    local found_artisan
+    found_artisan=$(find /var/www -maxdepth 3 -name "artisan" 2>/dev/null | head -n 1)
+    if [ -n "$found_artisan" ]; then
+        PANEL_DIR="$(dirname "$found_artisan")"
+        return 0
+    fi
+
     return 1
 }
 
@@ -857,7 +892,112 @@ system_doctor() {
 }
 
 # ==============================================================================
-# MAIN INTERACTIVE MENU
+# ==============================================================================
+# CATEGORIZED SUBMENUS
+# ==============================================================================
+
+menu_theme() {
+    while true; do
+        show_banner
+        echo -e " ${C_BOLD}${C_PURPLE}─── [1] ARIX THEME MANAGEMENT ───${C_RESET}\n"
+        echo -e "   ${C_CYAN}1)${C_RESET} Install Arix Theme"
+        echo -e "   ${C_CYAN}2)${C_RESET} Rebuild Arix Theme Assets (Production Webpack/Yarn)"
+        echo -e "   ${C_CYAN}3)${C_RESET} Repair Arix Theme (Self-Healing Doctor & Migrations)"
+        echo -e "   ${C_CYAN}4)${C_RESET} Remove Arix Theme (Clean Restore of Stock Pterodactyl)"
+        echo -e "   ${C_RED}0)${C_RESET} Back to Main Menu\n"
+
+        read -rp " Select Theme Option [0-4]: " sub_choice
+        case "$sub_choice" in
+            1) install_theme ;;
+            2) rebuild_theme; press_enter ;;
+            3) repair_theme ;;
+            4) remove_theme ;;
+            0) return ;;
+            *) print_error "Invalid option."; sleep 1 ;;
+        esac
+    done
+}
+
+menu_panel() {
+    while true; do
+        show_banner
+        echo -e " ${C_BOLD}${C_BLUE}─── [2] PTERODACTYL PANEL MANAGEMENT ───${C_RESET}\n"
+        echo -e "   ${C_CYAN}1)${C_RESET} Install Pterodactyl Panel (Fresh Setup)"
+        echo -e "   ${C_CYAN}2)${C_RESET} Rebuild Pterodactyl Panel (Yarn, Node & Dependencies)"
+        echo -e "   ${C_CYAN}3)${C_RESET} Repair Pterodactyl Panel (Migrations, Caches & Permissions)"
+        echo -e "   ${C_CYAN}4)${C_RESET} Remove Pterodactyl Panel (Full Clean Uninstall)"
+        echo -e "   ${C_RED}0)${C_RESET} Back to Main Menu\n"
+
+        read -rp " Select Panel Option [0-4]: " sub_choice
+        case "$sub_choice" in
+            1) install_pterodactyl ;;
+            2) rebuild_pterodactyl; press_enter ;;
+            3) repair_pterodactyl ;;
+            4) remove_pterodactyl ;;
+            0) return ;;
+            *) print_error "Invalid option."; sleep 1 ;;
+        esac
+    done
+}
+
+menu_backup() {
+    while true; do
+        show_banner
+        echo -e " ${C_BOLD}${C_GREEN}─── [3] SECTIONIZED BACKUPS & RESTORATION ───${C_RESET}\n"
+        echo -e "   ${C_CYAN}1)${C_RESET} Backup: Theme Only (Arix Views, Configs & Assets)"
+        echo -e "   ${C_CYAN}2)${C_RESET} Backup: Panel Files Only (Excluding Node Modules & Logs)"
+        echo -e "   ${C_CYAN}3)${C_RESET} Backup: MySQL Database Only (Gzipped Dump)"
+        echo -e "   ${C_CYAN}4)${C_RESET} Backup: Full Sectionized System Bundle (Database + Files + Manifest)"
+        echo -e "   ${C_CYAN}5)${C_RESET} Restore a Backup Archive (Interactive Selector)"
+        echo -e "   ${C_RED}0)${C_RESET} Back to Main Menu\n"
+
+        read -rp " Select Backup Option [0-5]: " sub_choice
+        case "$sub_choice" in
+            1) backup_theme_only; press_enter ;;
+            2) backup_panel_files_only; press_enter ;;
+            3) backup_database; press_enter ;;
+            4) backup_full_system; press_enter ;;
+            5) restore_backup_menu ;;
+            0) return ;;
+            *) print_error "Invalid option."; sleep 1 ;;
+        esac
+    done
+}
+
+menu_tools() {
+    while true; do
+        show_banner
+        echo -e " ${C_BOLD}${C_YELLOW}─── [4] SYSTEM TOOLS & HEALTH DOCTOR ───${C_RESET}\n"
+        echo -e "   ${C_CYAN}1)${C_RESET} System Doctor & Integrity Audit (PHP, Node, MySQL, Panel)"
+        echo -e "   ${C_CYAN}2)${C_RESET} Fix File Permissions (Auto-detect www-data/nginx/apache)"
+        echo -e "   ${C_CYAN}3)${C_RESET} Clear All Caches (Artisan Optimize, View, Config & Route)"
+        echo -e "   ${C_CYAN}4)${C_RESET} Set Custom Pterodactyl Panel Directory Path"
+        echo -e "   ${C_RED}0)${C_RESET} Back to Main Menu\n"
+
+        read -rp " Select Tool Option [0-4]: " sub_choice
+        case "$sub_choice" in
+            1) system_doctor ;;
+            2) fix_permissions; press_enter ;;
+            3) clear_panel_caches; press_enter ;;
+            4)
+                echo -e ""
+                read -rp " Enter absolute panel directory path [current: ${PANEL_DIR}]: " custom_dir
+                if [ -d "$custom_dir" ] && [ -f "${custom_dir}/artisan" ]; then
+                    PANEL_DIR="$custom_dir"
+                    print_success "Panel directory set to: ${PANEL_DIR}"
+                else
+                    print_error "Invalid directory or artisan not found in: ${custom_dir}"
+                fi
+                press_enter
+                ;;
+            0) return ;;
+            *) print_error "Invalid option."; sleep 1 ;;
+        esac
+    done
+}
+
+# ==============================================================================
+# MAIN CATEGORIZED MENU
 # ==============================================================================
 
 main_menu() {
@@ -865,50 +1005,29 @@ main_menu() {
 
     while true; do
         show_banner
-        echo -e " ${C_BOLD}${C_WHITE}SELECT AN OPTION:${C_RESET}\n"
+        echo -e " ${C_BOLD}${C_WHITE}MAIN CATEGORIES:${C_RESET}\n"
 
-        echo -e "  ${C_BOLD}${C_PURPLE}[ ARIX THEME MANAGEMENT ]${C_RESET}"
-        echo -e "   ${C_CYAN}1)${C_RESET} Install Arix Theme"
-        echo -e "   ${C_CYAN}2)${C_RESET} Rebuild Arix Theme Assets (Production)"
-        echo -e "   ${C_CYAN}3)${C_RESET} Repair Arix Theme (Self-Healing Doctor)"
-        echo -e "   ${C_CYAN}4)${C_RESET} Remove Arix Theme (Restore Stock Panel)\n"
+        echo -e "  ${C_PURPLE}${C_BOLD}[1]${C_RESET} ${C_WHITE}Arix Theme Management${C_RESET}"
+        echo -e "      ${C_GRAY}Install, Rebuild, Repair, and Remove Arix Theme${C_RESET}\n"
 
-        echo -e "  ${C_BOLD}${C_BLUE}[ PTERODACTYL PANEL MANAGEMENT ]${C_RESET}"
-        echo -e "   ${C_CYAN}5)${C_RESET} Install Pterodactyl Panel (Fresh)"
-        echo -e "   ${C_CYAN}6)${C_RESET} Rebuild Pterodactyl Panel (Yarn & Deps)"
-        echo -e "   ${C_CYAN}7)${C_RESET} Repair Pterodactyl Panel (Migrations & Cache)"
-        echo -e "   ${C_CYAN}8)${C_RESET} Remove Pterodactyl Panel Completely\n"
+        echo -e "  ${C_BLUE}${C_BOLD}[2]${C_RESET} ${C_WHITE}Pterodactyl Panel Management${C_RESET}"
+        echo -e "      ${C_GRAY}Fresh Install, Rebuild, Repair Core, and Remove Panel${C_RESET}\n"
 
-        echo -e "  ${C_BOLD}${C_GREEN}[ SECTIONIZED BACKUPS & RESTORE ]${C_RESET}"
-        echo -e "   ${C_CYAN}9)${C_RESET}  Backup: Theme Only"
-        echo -e "   ${C_CYAN}10)${C_RESET} Backup: Panel Files Only"
-        echo -e "   ${C_CYAN}11)${C_RESET} Backup: MySQL Database Only"
-        echo -e "   ${C_CYAN}12)${C_RESET} Backup: Full Sectionized System Bundle"
-        echo -e "   ${C_CYAN}13)${C_RESET} Restore a Backup Archive\n"
+        echo -e "  ${C_GREEN}${C_BOLD}[3]${C_RESET} ${C_WHITE}Sectionized Backups & Restore${C_RESET}"
+        echo -e "      ${C_GRAY}Theme, Files, MySQL Database, Full Bundles & Restore Menu${C_RESET}\n"
 
-        echo -e "  ${C_BOLD}${C_YELLOW}[ SYSTEM TOOLS ]${C_RESET}"
-        echo -e "   ${C_CYAN}14)${C_RESET} System Doctor & Integrity Audit"
-        echo -e "   ${C_CYAN}15)${C_RESET} Fix Permissions & Clear Caches"
-        echo -e "   ${C_RED}0)${C_RESET}  Exit\n"
+        echo -e "  ${C_YELLOW}${C_BOLD}[4]${C_RESET} ${C_WHITE}System Tools & Health Doctor${C_RESET}"
+        echo -e "      ${C_GRAY}Audit Environment, Fix Permissions, Clear Caches, Change Path${C_RESET}\n"
 
-        read -rp " Enter your choice [0-15]: " menu_choice
+        echo -e "  ${C_RED}${C_BOLD}[0]${C_RESET} ${C_RED}Exit${C_RESET}\n"
+
+        read -rp " Enter Category [0-4]: " menu_choice
 
         case "$menu_choice" in
-            1) install_theme ;;
-            2) rebuild_theme; press_enter ;;
-            3) repair_theme ;;
-            4) remove_theme ;;
-            5) install_pterodactyl ;;
-            6) rebuild_pterodactyl; press_enter ;;
-            7) repair_pterodactyl ;;
-            8) remove_pterodactyl ;;
-            9) backup_theme_only; press_enter ;;
-            10) backup_panel_files_only; press_enter ;;
-            11) backup_database; press_enter ;;
-            12) backup_full_system; press_enter ;;
-            13) restore_backup_menu ;;
-            14) system_doctor ;;
-            15) fix_permissions; clear_panel_caches; press_enter ;;
+            1) menu_theme ;;
+            2) menu_panel ;;
+            3) menu_backup ;;
+            4) menu_tools ;;
             0)
                 echo -e "\n ${C_GREEN}Goodbye!${C_RESET}\n"
                 exit 0

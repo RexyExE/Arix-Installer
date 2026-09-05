@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Arix Theme & Pterodactyl Panel Master Management CLI
-#  Version: 2.5.1 (Production Stable)
+#  Version: 2.5.2 (Production Stable)
 #  Supported OS: Ubuntu 20.04/22.04/24.04/26.04+ (Noble & beyond), Debian 11/12/13, AlmaLinux/Rocky 8/9, RHEL, Alpine
 # ==============================================================================
 
@@ -24,7 +24,7 @@ C_GRAY='\033[38;5;244m'
 PANEL_DIR="/var/www/pterodactyl"
 BACKUP_DIR="/var/backups/pterodactyl"
 THEME_VERSION="v2.0.8"
-SCRIPT_VERSION="2.5.1"
+SCRIPT_VERSION="2.5.2"
 LOG_FILE="/var/log/arix-manager.log"
 
 # Create backup and log directory if possible
@@ -837,8 +837,8 @@ rebuild_theme() {
             docker cp "${DOCKER_CONTAINER}:/app/tailwind.config.js" "$build_dir/" 2>/dev/null || \
             cp -f /tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8/tailwind.config.js "$build_dir/" 2>/dev/null || true
 
-            # 4. Run build using temporary docker container with host networking
-            print_info "Compiling React frontend bundle with Webpack (using host network stack)..."
+            # 4. Run build using temporary docker container with host networking & Node 22
+            print_info "Compiling React frontend bundle with Webpack (using host network stack & Node 22)..."
             docker run --rm \
                 --net=host \
                 --dns 8.8.8.8 \
@@ -846,8 +846,8 @@ rebuild_theme() {
                 -v "${build_dir}:/app" \
                 -w /app \
                 -e NODE_OPTIONS="--openssl-legacy-provider" \
-                node:18-bullseye \
-                sh -c "yarn config set network-timeout 600000 && yarn install --ignore-engines --network-timeout 600000 && yarn build:production"
+                node:22-bookworm \
+                sh -c "node -e \"let p=require('./package.json'); delete p.engines; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))\" 2>/dev/null || true; yarn config set network-timeout 600000 && yarn install --ignore-engines --network-timeout 600000 && yarn --ignore-engines run build:production"
 
             if [ -d "$build_dir/public/assets" ] && [ -f "$build_dir/public/assets/manifest.json" ]; then
                 print_info "Injecting newly built Arix production assets into ${DOCKER_CONTAINER}..."

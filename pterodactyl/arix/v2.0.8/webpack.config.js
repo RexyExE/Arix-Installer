@@ -97,7 +97,7 @@ module.exports = {
             WEBPACK_BUILD_HASH: Date.now().toString(16),
         }),
         new AssetsManifestPlugin({ writeToDisk: true, publicPath: true, integrity: true, integrityHashes: ['sha384'] }),
-        new ForkTsCheckerWebpackPlugin({
+        isProduction ? null : new ForkTsCheckerWebpackPlugin({
             async: true,
             typescript: {
                 mode: 'write-references',
@@ -106,7 +106,7 @@ module.exports = {
                     syntactic: false,
                 },
             },
-            eslint: isProduction ? undefined : {
+            eslint: {
                 files: `${path.join(__dirname, '/resources/scripts')}/**/*.{ts,tsx}`,
             }
         }),

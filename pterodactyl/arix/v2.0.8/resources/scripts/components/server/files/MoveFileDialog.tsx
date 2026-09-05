@@ -13,7 +13,6 @@ import { FolderIcon } from '@heroicons/react/outline';
 import { ArrowCircleLeftIcon } from '@heroicons/react/solid';
 import { Dialog, DialogWrapperContext } from '@/components/elements/dialog';
 import asDialog from '@/hoc/asDialog';
-import path from 'path/win32';
 
 interface FormikValues {
     name: string;

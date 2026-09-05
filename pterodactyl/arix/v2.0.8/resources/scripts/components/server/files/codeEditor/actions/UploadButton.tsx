@@ -1,5 +1,5 @@
 
-import axios, { AxiosProgressEvent } from 'axios';
+import axios from 'axios';
 import getFileUploadUrl from '@/api/server/files/getFileUploadUrl';
 import tw from 'twin.macro';
 import React, { useEffect, useRef } from 'react';
@@ -63,7 +63,7 @@ export default ({ className, onRefresh }: UploadButtonProps) => {
         return () => timeouts.value.forEach(clearTimeout);
     }, []);
 
-    const onUploadProgress = (data: AxiosProgressEvent, name: string) => {
+    const onUploadProgress = (data: any, name: string) => {
         setUploadProgress({ name, loaded: data.loaded });
     };
 

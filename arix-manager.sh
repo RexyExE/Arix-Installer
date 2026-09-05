@@ -644,16 +644,15 @@ install_theme() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local theme_source=""
 
-    if [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
+    if [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
         theme_source="${script_dir}/pterodactyl/arix/v2.0.8"
-    elif [ -d "${script_dir}/pterodactyl" ] && [ -f "${script_dir}/pterodactyl/config/arixTheme.php" ]; then
+    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl" ] && [ -f "${script_dir}/pterodactyl/config/arixTheme.php" ]; then
         theme_source="${script_dir}/pterodactyl"
-    elif [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
-        theme_source="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
-    elif [ -d "/tmp/arix/v2.0.8" ]; then
-        theme_source="/tmp/arix/v2.0.8"
+    elif [ -d "${PANEL_DIR}/arix/v2.0.8" ]; then
+        theme_source="${PANEL_DIR}/arix/v2.0.8"
     else
         print_info "Theme source files not found locally. Downloading latest release from GitHub..."
+        rm -rf /tmp/arix_repo_extracted
         mkdir -p /tmp/arix_repo_extracted
         if curl -sSL "https://github.com/RexyExE/Arix-Installer/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp/arix_repo_extracted --strip-components=1 2>/dev/null; then
             if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
@@ -798,17 +797,15 @@ rebuild_theme() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     local theme_src=""
-    if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
-        theme_src="/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8"
-    elif [ -d "/tmp/arix_repo_extracted/pterodactyl" ]; then
-        theme_src="/tmp/arix_repo_extracted/pterodactyl"
-    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
+    if [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl/arix/v2.0.8" ]; then
         theme_src="${script_dir}/pterodactyl/arix/v2.0.8"
-    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl" ]; then
+    elif [ -n "$script_dir" ] && [ -d "${script_dir}/pterodactyl" ] && [ -f "${script_dir}/pterodactyl/config/arixTheme.php" ]; then
         theme_src="${script_dir}/pterodactyl"
     elif [ -d "${PANEL_DIR}/arix/v2.0.8" ]; then
         theme_src="${PANEL_DIR}/arix/v2.0.8"
     else
+        print_info "Fetching latest Arix Theme release from repository..."
+        rm -rf /tmp/arix_repo_extracted
         mkdir -p /tmp/arix_repo_extracted
         curl -sSL "https://github.com/RexyExE/Arix-Installer/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp/arix_repo_extracted --strip-components=1 2>/dev/null || true
         if [ -d "/tmp/arix_repo_extracted/pterodactyl/arix/v2.0.8" ]; then
@@ -831,6 +828,9 @@ rebuild_theme() {
             curl -sSL "https://github.com/pterodactyl/panel/archive/refs/tags/v1.11.7.tar.gz" | tar -xz -C "$build_dir" --strip-components=1 2>/dev/null || true
         fi
 
+        # Remove stock yarn.lock so yarn resolves fresh dependencies with all Arix packages
+        rm -f "$build_dir/yarn.lock"
+
         # 2. Overlay container resources (if any custom modifications exist)
         docker cp "${DOCKER_CONTAINER}:/app/resources/." "$build_dir/resources/" 2>/dev/null || \
         docker cp "${DOCKER_CONTAINER}:/var/www/pterodactyl/resources/." "$build_dir/resources/" 2>/dev/null || true
@@ -844,6 +844,12 @@ rebuild_theme() {
                     cp -f "$theme_src/$cfg" "$build_dir/" 2>/dev/null || true
                 fi
             done
+        fi
+        if [ -f "${script_dir}/pterodactyl/package.json" ]; then
+            cp -f "${script_dir}/pterodactyl/package.json" "$build_dir/package.json"
+        fi
+        if [ -f "${script_dir}/pterodactyl/webpack.config.js" ]; then
+            cp -f "${script_dir}/pterodactyl/webpack.config.js" "$build_dir/webpack.config.js"
         fi
         mkdir -p "$build_dir/public/assets"
 
@@ -860,7 +866,8 @@ rebuild_theme() {
             -w /app \
             -e NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096" \
             node:22-bookworm \
-            sh -c "mkdir -p public/assets && \
+            sh -c "rm -f yarn.lock && \
+            mkdir -p public/assets && \
             yarn config set network-timeout 600000 && \
             yarn install --ignore-engines --network-timeout 600000 && \
             mkdir -p public/assets && \
@@ -907,6 +914,13 @@ rebuild_theme() {
             cp -rf "$theme_src/public/"* "${PANEL_DIR}/public/" 2>/dev/null || true
         fi
     fi
+    if [ -f "${script_dir}/pterodactyl/package.json" ]; then
+        cp -f "${script_dir}/pterodactyl/package.json" "${PANEL_DIR}/package.json"
+    fi
+    if [ -f "${script_dir}/pterodactyl/webpack.config.js" ]; then
+        cp -f "${script_dir}/pterodactyl/webpack.config.js" "${PANEL_DIR}/webpack.config.js"
+    fi
+    rm -f "${PANEL_DIR}/yarn.lock"
 
     # Fallback: if package.json or webpack.config.js is still missing, fetch clean scaffold from official Pterodactyl release
     if [ ! -f "${PANEL_DIR}/package.json" ] || [ ! -f "${PANEL_DIR}/webpack.config.js" ]; then
@@ -921,6 +935,7 @@ rebuild_theme() {
             done
         fi
         rm -rf "$tmp_scaffold"
+        rm -f "${PANEL_DIR}/yarn.lock"
     fi
 
     # Compile translations
@@ -942,7 +957,8 @@ rebuild_theme() {
             -w /app \
             -e NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096" \
             node:22-bookworm \
-            sh -c "mkdir -p public/assets && \
+            sh -c "rm -f yarn.lock && \
+            mkdir -p public/assets && \
             yarn config set network-timeout 600000 && \
             yarn install --ignore-engines --network-timeout 600000 && \
             mkdir -p public/assets && \
@@ -980,6 +996,7 @@ rebuild_theme() {
         export NODE_OPTIONS="--openssl-legacy-provider --max-old-space-size=4096"
 
         mkdir -p "${PANEL_DIR}/public/assets"
+        rm -f "${PANEL_DIR}/yarn.lock"
         yarn config set network-timeout 600000 2>/dev/null || true
         yarn install --ignore-engines --network-timeout 600000
         yarn --ignore-engines run build:production

@@ -1,4 +1,4 @@
-import axios, { AxiosProgressEvent } from 'axios';
+import axios from 'axios';
 import getFileUploadUrl from '@/api/server/files/getFileUploadUrl';
 import decompressFiles from '@/api/server/files/decompressFiles';
 import deleteFiles from '@/api/server/files/deleteFiles';
@@ -38,7 +38,7 @@ export default ({ className }: WithClassname) => {
         return () => timeouts.value.forEach(clearTimeout);
     }, []);
 
-    const onUploadProgress = (data: AxiosProgressEvent, name: string) => {
+    const onUploadProgress = (data: any, name: string) => {
         setUploadProgress({ name, loaded: data.loaded });
     };
 

@@ -97,9 +97,14 @@ detect_distro() {
     fi
 }
 
+# Detect if running in Docker container or Host with Docker
+DOCKER_CONTAINER=""
+IS_DOCKER=false
+
 detect_panel() {
     # 1. Check currently configured PANEL_DIR
     if [ -n "$PANEL_DIR" ] && [ -f "${PANEL_DIR}/artisan" ]; then
+        IS_DOCKER=false
         return 0
     fi
 
@@ -108,10 +113,11 @@ detect_panel() {
     current_pwd="$(pwd)"
     if [ -f "${current_pwd}/artisan" ]; then
         PANEL_DIR="${current_pwd}"
+        IS_DOCKER=false
         return 0
     fi
 
-    # 3. Check common standard directories
+    # 3. Check common standard host directories
     local search_paths=(
         "/var/www/pterodactyl"
         "/var/www/panel"
@@ -119,24 +125,49 @@ detect_panel() {
         "/var/www/html/pterodactyl"
         "/var/www/html"
         "/opt/pterodactyl"
+        "/srv/pterodactyl"
+        "/etc/pterodactyl"
     )
 
     for p in "${search_paths[@]}"; do
         if [ -f "${p}/artisan" ]; then
             PANEL_DIR="$p"
+            IS_DOCKER=false
             return 0
         fi
     done
 
-    # 4. Try locate/find if still not found
+    # 4. Try locate/find if still not found on disk
     local found_artisan
-    found_artisan=$(find /var/www -maxdepth 3 -name "artisan" 2>/dev/null | head -n 1)
+    found_artisan=$(find /var/www /opt /srv -maxdepth 4 -name "artisan" 2>/dev/null | head -n 1)
     if [ -n "$found_artisan" ]; then
         PANEL_DIR="$(dirname "$found_artisan")"
+        IS_DOCKER=false
         return 0
     fi
 
+    # 5. Check if Pterodactyl is running in Docker!
+    if command -v docker &>/dev/null; then
+        local c_id
+        c_id=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E -i 'pterodactyl|panel|ptero' | head -n 1)
+        if [ -n "$c_id" ]; then
+            DOCKER_CONTAINER="$c_id"
+            IS_DOCKER=true
+            PANEL_DIR="docker:${DOCKER_CONTAINER}"
+            return 0
+        fi
+    fi
+
     return 1
+}
+
+# Unified artisan runner (Host or Docker)
+run_artisan() {
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        docker exec -it "$DOCKER_CONTAINER" php artisan "$@"
+    else
+        (cd "$PANEL_DIR" && php artisan "$@")
+    fi
 }
 
 # Load database credentials from Panel .env
@@ -180,12 +211,17 @@ EOF
     echo -e " ${C_DIM}─────────────────────────────────────────────────────────────────────────────${C_RESET}"
     
     if detect_panel; then
-        local webuser
-        webuser=$(detect_webuser)
-        echo -e " Panel Status:  ${C_GREEN}● Detected${C_RESET} (${PANEL_DIR})"
-        echo -e " Web User:      ${C_CYAN}${webuser}${C_RESET} | Backup Dir: ${C_CYAN}${BACKUP_DIR}${C_RESET}"
+        if [ "$IS_DOCKER" = true ]; then
+            echo -e " Panel Status:  ${C_GREEN}● Detected (Docker Container: ${DOCKER_CONTAINER})${C_RESET}"
+            echo -e " Environment:   ${C_CYAN}Containerized Pterodactyl${C_RESET} | Backup Dir: ${C_CYAN}${BACKUP_DIR}${C_RESET}"
+        else
+            local webuser
+            webuser=$(detect_webuser)
+            echo -e " Panel Status:  ${C_GREEN}● Detected${C_RESET} (${PANEL_DIR})"
+            echo -e " Web User:      ${C_CYAN}${webuser}${C_RESET} | Backup Dir: ${C_CYAN}${BACKUP_DIR}${C_RESET}"
+        fi
     else
-        echo -e " Panel Status:  ${C_RED}○ Not Detected${C_RESET} (${PANEL_DIR} not found)"
+        echo -e " Panel Status:  ${C_RED}○ Not Detected${C_RESET} (${PANEL_DIR} not found on host or docker)"
     fi
     echo -e " ${C_DIM}─────────────────────────────────────────────────────────────────────────────${C_RESET}\n"
 }
@@ -194,9 +230,13 @@ EOF
 fix_permissions() {
     local webuser
     webuser=$(detect_webuser)
-    print_step "Setting correct file ownership and permissions (${webuser})"
+    print_step "Setting correct file ownership and permissions"
     
-    if [ -d "$PANEL_DIR" ]; then
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        docker exec -i "$DOCKER_CONTAINER" chown -R nginx:nginx /app/storage /app/bootstrap/cache 2>/dev/null || \
+        docker exec -i "$DOCKER_CONTAINER" chown -R www-data:www-data /var/www/pterodactyl 2>/dev/null || true
+        print_success "Permissions set inside Docker container ${DOCKER_CONTAINER}"
+    elif [ -d "$PANEL_DIR" ]; then
         chown -R "$webuser" "${PANEL_DIR}"
         chmod -R 755 "${PANEL_DIR}/storage" "${PANEL_DIR}/bootstrap/cache" 2>/dev/null || true
         print_success "Permissions set to ${webuser} on ${PANEL_DIR}"
@@ -205,8 +245,14 @@ fix_permissions() {
 
 # --- Cache & Optimization Clearer ---
 clear_panel_caches() {
-    if [ -f "${PANEL_DIR}/artisan" ]; then
-        print_step "Flushing Laravel application, route, view, and config caches"
+    print_step "Flushing Laravel application, route, view, and config caches"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        docker exec -i "$DOCKER_CONTAINER" php artisan optimize:clear >/dev/null 2>&1 || true
+        docker exec -i "$DOCKER_CONTAINER" php artisan view:clear >/dev/null 2>&1 || true
+        docker exec -i "$DOCKER_CONTAINER" php artisan config:clear >/dev/null 2>&1 || true
+        docker exec -i "$DOCKER_CONTAINER" php artisan route:clear >/dev/null 2>&1 || true
+        print_success "All application caches cleared inside Docker container"
+    elif [ -f "${PANEL_DIR}/artisan" ]; then
         (
             cd "$PANEL_DIR" || exit 1
             php artisan optimize:clear >/dev/null 2>&1 || true
@@ -531,25 +577,37 @@ install_theme() {
     print_info "Creating automatic pre-install backup..."
     backup_theme_only 2>/dev/null || true
 
-    print_info "Deploying theme files from: ${theme_source} -> ${PANEL_DIR}"
-    cp -rf "${theme_source}/"* "${PANEL_DIR}/"
+    if [ "$IS_DOCKER" = true ] && [ -n "$DOCKER_CONTAINER" ]; then
+        print_info "Deploying theme files into Docker container: ${DOCKER_CONTAINER}..."
+        docker cp "${theme_source}/." "${DOCKER_CONTAINER}:/app/" 2>/dev/null || \
+        docker cp "${theme_source}/." "${DOCKER_CONTAINER}:/var/www/pterodactyl/"
+        
+        print_step "Running Theme Database Migrations inside Docker"
+        run_artisan migrate --force
 
-    print_step "Running Theme Database Migrations"
-    (
-        cd "$PANEL_DIR" || exit 1
-        php artisan migrate --force
-    )
+        print_step "Running Arix Theme Setup & Seeding inside Docker"
+        run_artisan arix:fix 2>/dev/null || run_artisan arix install 2>/dev/null || true
+    else
+        print_info "Deploying theme files from: ${theme_source} -> ${PANEL_DIR}"
+        cp -rf "${theme_source}/"* "${PANEL_DIR}/"
 
-    print_step "Running Arix Theme Setup & Seeding"
-    (
-        cd "$PANEL_DIR" || exit 1
-        if php artisan list | grep -q "arix:fix"; then
-            php artisan arix:fix
-        fi
-        if php artisan list | grep -q "arix"; then
-            php artisan arix install
-        fi
-    )
+        print_step "Running Theme Database Migrations"
+        (
+            cd "$PANEL_DIR" || exit 1
+            php artisan migrate --force
+        )
+
+        print_step "Running Arix Theme Setup & Seeding"
+        (
+            cd "$PANEL_DIR" || exit 1
+            if php artisan list | grep -q "arix:fix"; then
+                php artisan arix:fix
+            fi
+            if php artisan list | grep -q "arix"; then
+                php artisan arix install
+            fi
+        )
+    fi
 
     # Rebuild assets if yarn is available or ask
     echo ""
@@ -664,17 +722,13 @@ repair_theme() {
     cd "$PANEL_DIR" || exit 1
 
     print_info "1. Syncing database migrations..."
-    php artisan migrate --force
+    run_artisan migrate --force
 
     print_info "2. Executing arix:fix self-healing artisan routine..."
-    if php artisan list | grep -q "arix:fix"; then
-        php artisan arix:fix
-    elif php artisan list | grep -q "arix"; then
-        php artisan arix fix
-    fi
+    run_artisan arix:fix 2>/dev/null || run_artisan arix fix 2>/dev/null || true
 
     print_info "3. Clearing view, config, route, and application caches..."
-    php artisan optimize:clear
+    clear_panel_caches
 
     print_info "4. Auditing file permissions..."
     fix_permissions
